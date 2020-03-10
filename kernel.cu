@@ -415,15 +415,15 @@ int main() {
     map<string, int> examList = mapDataFromCSV("C:\\Users\\lingz\\Documents\\y4sem2\\IE4102\\Cuda Projects\\Cuda Datasets\\Nott\\exams.csv");
 
     //set stats
-    int numOfStudents = studentList.size(); // nott
-    int numOfExams = examList.size(); // nott
-    int numOfTimeslots = 23; //nott
+    //int numOfStudents = studentList.size(); // nott
+    //int numOfExams = examList.size(); // nott
+    //int numOfTimeslots = 23; //nott
     //int numOfStudents = 18419; // car 92
     //int numOfExams = 543; //car 92
     //int numOfTimeslots = 32;//car92
-    //int numOfStudents = 941; // yor 83
-    //int numOfExams = 181; //yor 83
-    //int numOfTimeslots = 21; //yor 83
+    int numOfStudents = 941; // yor 83
+    int numOfExams = 181; //yor 83
+    int numOfTimeslots = 21; //yor 83
     //int numOfStudents = 30032; // pur 93
     //int numOfExams = 2419; //pur 93
     //int numOfTimeslots = 42; //pur 93
@@ -440,7 +440,8 @@ int main() {
 
     //generate matrices
     //af::array enrolementMatrix = createEnrolmentMatrixForAltData(numOfExams, numOfStudents, "C:\\Users\\lingz\\Documents\\y4sem2\\IE4102\\Cuda Projects\\Cuda Datasets\\car\\car-92.csv");
-    af::array enrolementMatrix = createEnrolmentMatrix(studentList, examList, "C:\\Users\\lingz\\Documents\\y4sem2\\IE4102\\Cuda Projects\\Cuda Datasets\\Nott\\enrolements.csv");
+    af::array enrolementMatrix = createEnrolmentMatrixForAltData(numOfExams, numOfStudents, "C:\\Users\\lingz\\Documents\\y4sem2\\IE4102\\Cuda Projects\\Cuda Datasets\\yor\\yor-83.csv");
+    //af::array enrolementMatrix = createEnrolmentMatrix(studentList, examList, "C:\\Users\\lingz\\Documents\\y4sem2\\IE4102\\Cuda Projects\\Cuda Datasets\\Nott\\enrolements.csv");
     af::array generatedExamSchedule = af::constant(0, numOfExams, numOfTimeslots, numOfParticles);
     af::array fitnessPerParticle = af::constant(INT_MAX, 1, 1, numOfParticles);
     af::array pBestfitnessPerParticle = af::constant(INT_MAX, 1, 1, numOfParticles);
@@ -498,28 +499,28 @@ int main() {
             break;
         }
 
-        //if (lowestgBest == gBestFitness) {
-        //    stuckCount++;
-        //    perturbcount++;
+        if (lowestgBest == gBestFitness) {
+            stuckCount++;
+            perturbcount++;
 
-        //    //if (stuckCount > 5) {
-        //    ////    cout << "scattering particles!!!!!!!!!!!\n\n";
-        //    //    setSeed(time(NULL));
-        //    //    velocityList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
-        //    //    normalizeParticleList(velocityList);
-        //    ////    //setSeed(time(NULL));
-        //    ////    //particleList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
-        //    ////    //normalizeParticleList(particleList);
-        //    //}
+            //if (stuckCount > 5) {
+            ////    cout << "scattering particles!!!!!!!!!!!\n\n";
+            //    setSeed(time(NULL));
+            //    velocityList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
+            //    normalizeParticleList(velocityList);
+            ////    //setSeed(time(NULL));
+            ////    //particleList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
+            ////    //normalizeParticleList(particleList);
+            //}
 
 
 
-        //}
-        //else {
-        //    stuckCount = 0;
-        //    perturbcount = 0;
-        //    lowestgBest = gBestFitness;
-        //}
+        }
+        else {
+            stuckCount = 0;
+            perturbcount = 0;
+            lowestgBest = gBestFitness;
+        }
 
         calculateVelocity(particleList, particlePbestList, particleGbest, velocityList, numOfParticles, w, u1, u2);
 
