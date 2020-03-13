@@ -129,6 +129,18 @@ void normalizeParticleList(af::array& particleList) {
     af::array normalizationConstant = sum(particleList, 1);
 
     replace(particleList, !negativeValues, reset);
+
+    af::array zeroVectorCondition = normalizationConstant == 0;
+
+    af::array resetZeros = af::randu(particleList.dims(0), particleList.dims(1));
+
+    gfor(seq j, particleList.dims(0)) {
+        particleList(j, span) = zeroVectorCondition(j) * resetZeros(j, span) + (!zeroVectorCondition)(j) * particleList(j, span);
+    }
+
+    normalizationConstant = sum(particleList, 1);
+    
+
     gfor(seq i, particleList.dims(0)) {
         for (int j = 0; j < particleList.dims(1); j++) {
             particleList(i, j) = particleList(i, j) / normalizationConstant(i);
@@ -321,21 +333,7 @@ void updatePBest(af::array& fitnessPerParticle, af::array& pBestfitnessPerPartic
 
     generatedExamSchedule = moddims(reorder(generatedExamSchedule, 1, 0, 2), numOfTimeslots, numOfParticles * numOfExams).T();
 
-    af::array dimensionTotal = sum(particleList, 1);
-    af::array condition1 = fitnessPerParticle < pBestfitnessPerParticle;
-    replace(pBestfitnessPerParticle, !condition1, fitnessPerParticle);
-    condition1 = moddims(reorder(tile(condition1, 1, numOfExams), 1, 0, 2), 1, numOfParticles * numOfExams).T();
-
-    gfor(seq i, numOfParticles * numOfExams) {
-        for (int j = 0; j < numOfTimeslots; j++) {
-            af::array condition2 = (generatedExamSchedule(i, j) == 1);
-            particlePbestList(i, j) = (learningFactor)*condition1(i) * (!condition2) * particleList(i, j)
-                + condition1(i) * condition2 * ((dimensionTotal(i) - particleList(i, j)) * (1.0 - learningFactor) + particleList(i, j))
-                + (!condition1)(i) * particlePbestList(i, j);
-        }
-    }
-
-    //af::array dimensionTotal = sum(particlePbestList, 1);
+    //af::array dimensionTotal = sum(particleList, 1);
     //af::array condition1 = fitnessPerParticle < pBestfitnessPerParticle;
     //replace(pBestfitnessPerParticle, !condition1, fitnessPerParticle);
     //condition1 = moddims(reorder(tile(condition1, 1, numOfExams), 1, 0, 2), 1, numOfParticles * numOfExams).T();
@@ -343,10 +341,24 @@ void updatePBest(af::array& fitnessPerParticle, af::array& pBestfitnessPerPartic
     //gfor(seq i, numOfParticles * numOfExams) {
     //    for (int j = 0; j < numOfTimeslots; j++) {
     //        af::array condition2 = (generatedExamSchedule(i, j) == 1);
-    //        particlePbestList(i, j) = particlePbestList(i, j) - (1 - learningFactor) * condition1(i) * (!condition2) * particlePbestList(i, j)
-    //            + condition1(i) * condition2 * (dimensionTotal(i) - particlePbestList(i, j)) * (1 - learningFactor);
+    //        particlePbestList(i, j) = (learningFactor)*condition1(i) * (!condition2) * particleList(i, j)
+    //            + condition1(i) * condition2 * ((dimensionTotal(i) - particleList(i, j)) * (1.0 - learningFactor) + particleList(i, j))
+    //            + (!condition1)(i) * particlePbestList(i, j);
     //    }
     //}
+
+    af::array dimensionTotal = sum(particlePbestList, 1);
+    af::array condition1 = fitnessPerParticle < pBestfitnessPerParticle;
+    replace(pBestfitnessPerParticle, !condition1, fitnessPerParticle);
+    condition1 = moddims(reorder(tile(condition1, 1, numOfExams), 1, 0, 2), 1, numOfParticles * numOfExams).T();
+
+    gfor(seq i, numOfParticles * numOfExams) {
+        for (int j = 0; j < numOfTimeslots; j++) {
+            af::array condition2 = (generatedExamSchedule(i, j) == 1);
+            particlePbestList(i, j) = particlePbestList(i, j) - (1 - learningFactor) * condition1(i) * (!condition2) * particlePbestList(i, j)
+                + condition1(i) * condition2 * (dimensionTotal(i) - particlePbestList(i, j)) * (1 - learningFactor);
+        }
+    }
 
 
     af_sync;
@@ -481,7 +493,7 @@ int main() {
         af::max(maxValue, location, isNaN(particleList));
         if (*maxValue > 0) {
             cout << "nan detected resetting!!!!!! location = " << *location << "\n";
-            af_print(particleList);
+            //af_print(particleList);
             //break;
             
             particleList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
@@ -503,15 +515,15 @@ int main() {
             stuckCount++;
             perturbcount++;
 
-            //if (stuckCount > 5) {
-            ////    cout << "scattering particles!!!!!!!!!!!\n\n";
-            //    setSeed(time(NULL));
-            //    velocityList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
-            //    normalizeParticleList(velocityList);
-            ////    //setSeed(time(NULL));
-            ////    //particleList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
-            ////    //normalizeParticleList(particleList);
-            //}
+            if (stuckCount > 5) {
+                //cout << "scattering particles!!!!!!!!!!!\n\n";
+ /*               setSeed(time(NULL));
+                velocityList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
+                normalizeParticleList(velocityList);*/
+                //setSeed(time(NULL));
+                //particleList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
+                //normalizeParticleList(particleList);
+            }
 
 
 
@@ -529,6 +541,9 @@ int main() {
         if (perturbcount > 10) {
             cout << "perturbing!!!!!!!!!!!!!!!!! \n\n";
             perturbConflictZone(particleList, conflictTimeslots, generatedExamSchedule, particlePbestList,defaultValue);
+            setSeed(time(NULL));
+            velocityList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
+            normalizeParticleList(velocityList);
             perturbcount = 0;
         }
 
