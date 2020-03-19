@@ -232,10 +232,9 @@ void calculateFitnessFunction(af::array& generatedExamSchedule, af::array& enrol
     //calculate constraint 1
     af::array averageFitness = af::constant(0, 1, 1, numOfParticles);;
     af::array sampledSchedule = generatedExamSchedule;
-<<<<<<< HEAD
-=======
+
     af::array sampledConflictZone;
->>>>>>> yor
+
     for (int i = 0; i < 5; i++) {
         sampleParticleDistributions(numOfParticles, numOfExams, numOfTimeslots, particleList, generatedExamSchedule);
         af::array numberOfClashesPerStudent;
@@ -463,15 +462,11 @@ int main() {
     int numOfParticles = 100;
 
     float defaultValue = 1.0 / numOfTimeslots;
-<<<<<<< HEAD
-    double w = 0.1;
-    double u1 = 1;
-    double u2 = 6;
-=======
+
     double w = 0.5;
     double u1 = 1;
     double u2 = 3;
->>>>>>> yor
+
     int numOfIterations = INT_MAX;
     float learningFactor = 0.5;
     float gBestFitness = INT_MAX;
@@ -544,15 +539,7 @@ int main() {
             perturbcount++;
 
             if (stuckCount > 5) {
-<<<<<<< HEAD
-            //    cout << "scattering particles!!!!!!!!!!!\n\n";
-                setSeed(time(NULL));
-                velocityList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
-                normalizeParticleList(velocityList);
-            //    //setSeed(time(NULL));
-            //    //particleList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
-            //    //normalizeParticleList(particleList);
-=======
+
                 //cout << "scattering particles!!!!!!!!!!!\n\n";
  /*               setSeed(time(NULL));
                 velocityList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
@@ -560,33 +547,20 @@ int main() {
                 //setSeed(time(NULL));
                 //particleList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
                 //normalizeParticleList(particleList);
->>>>>>> yor
             }
 
 
 
-<<<<<<< HEAD
-        }
-        else {
-            stuckCount = 0;
-            perturbcount = 0;
-            lowestgBest = gBestFitness;
-=======
         }else {
             stuckCount = 0;
             perturbcount = 0;
             lowestgBest = gBestFitness;
             perturbMultiplier = 0;
->>>>>>> yor
         }
 
         calculateVelocity(particleList, particlePbestList, particleGbest, velocityList, numOfParticles, w, u1, u2);
 
-<<<<<<< HEAD
         if (stuckCount > 400) {
-=======
-        if (stuckCount > 1000000) {
->>>>>>> yor
             break;
         }
 
@@ -610,10 +584,9 @@ int main() {
 
     //af_print(particleGbest);
     //af_print(generatedExamSchedule);
-<<<<<<< HEAD
-=======
+
     validateSchedule(generatedExamSchedule);
->>>>>>> yor
+
     cout << "lowest fitness found, " << gBestFitness << " , learning factor,  " << learningFactor << ", w , " << w << ", u1 ," << u1 << ", u2 ," << u2 << ", round, " << "\n";
     printf("elapsed seconds: %g for round \n\n", timer::stop(start1));
 
