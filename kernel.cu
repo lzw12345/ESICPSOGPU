@@ -113,12 +113,11 @@ af::array createEnrolmentMatrixForAltData(int numOfExams, int numOfStudents, str
     return enrolmentMatrix;
 }
 
-af::array createConflictMatrix(af::array& enrolementMatrix, int numOfParticles) {
-    af::array conflictMatrix = matmul(enrolementMatrix.T(), enrolementMatrix);
-    af::array conflictCondition = conflictMatrix > 0;
-    replace(conflictMatrix, !conflictCondition, 1);
+af::array createConflictMatrix(af::array conflictSeverity, int numOfParticles) {
+    af::array conflictMatrix = conflictSeverity > 0;
+    conflictMatrix = conflictMatrix - lower(conflictMatrix);
     conflictMatrix = tile(conflictMatrix, 1, 1, numOfParticles);
-    return !upper(conflictMatrix).as(b8);
+    return conflictMatrix;
 }
 
 void normalizeParticleList(af::array& particleList) {
@@ -243,9 +242,10 @@ af::array calculateexamTimeSlotDifference(af::array examTimeSlot, af::array conf
     examTimeSlot = tile(examTimeSlot, 1, examTimeSlot.dims(0),1);
     af::array examDistance = examTimeSlot - examTimeSlot.T();
     af::array conflictedDistance = constant(0, examDistance.dims(0), examDistance.dims(1),examDistance.dims(2));
-    replace(conflictedDistance, conflictMatrix, examDistance);
-    conflictedDistance = (distanceWeight - abs(conflictedDistance)) * 2;
+    replace(conflictedDistance, !conflictMatrix, examDistance);
+    conflictedDistance = (distanceWeight - abs(conflictedDistance));
     replace(conflictedDistance, !(conflictedDistance < 0), 0);
+    
     return sum(sum(conflictedDistance));
 }
 
@@ -502,7 +502,7 @@ int main() {
     //int numOfTimeslots = 42; //pur 93
     int numOfStudents = 2750; // ute 92
     int numOfExams = 184; // ute 92
-    int numOfTimeslots = 11; // ute 92
+    int numOfTimeslots = 10; // ute 92
     int numOfParticles = 150;
     float defaultValue = 1.0 / numOfTimeslots;
 
@@ -538,14 +538,15 @@ int main() {
     af::array enrolementMatrix = createEnrolmentMatrixForAltData(numOfExams, numOfStudents, "C:\\Users\\lingz\\Documents\\y4sem2\\IE4102\\Cuda Projects\\Cuda Datasets\\ute\\ute-92.csv");
     //af::array enrolementMatrix = createEnrolmentMatrixForAltData(numOfExams, numOfStudents, "C:\\Users\\lingz\\Documents\\y4sem2\\IE4102\\Cuda Projects\\Cuda Datasets\\yor\\yor-83.csv");
     //af::array enrolementMatrix = createEnrolmentMatrix(studentList, examList, "C:\\Users\\lingz\\Documents\\y4sem2\\IE4102\\Cuda Projects\\Cuda Datasets\\Nott\\enrolements.csv");
-    af::array conflictMatrix = createConflictMatrix(enrolementMatrix, numOfParticles);
+    af::array conflictSeverity = matmul(enrolementMatrix.T(), enrolementMatrix);
+    af::array conflictMatrix = createConflictMatrix(conflictSeverity, numOfParticles);
     af::array generatedExamSchedule = af::constant(0, numOfExams, numOfTimeslots, numOfParticles);
     af::array fitnessPerParticle = af::constant(INT_MAX, 1, 1, numOfParticles);
     af::array pBestfitnessPerParticle = af::constant(INT_MAX, 1, 1, numOfParticles);
     af::array conflictTimeslots = af::constant(0, 1, numOfTimeslots, numOfParticles);
     af::array examSizes = generateExamSize(enrolementMatrix, roomCapacity);
     af::array examTimeSlot = constant(0, numOfExams, 1, numOfParticles);
-    af::array distanceWeight = conflictMatrix * 5;
+    af::array distanceWeight = conflictMatrix * 2;
 
     //initialise particles
     af::array particleList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
@@ -557,7 +558,7 @@ int main() {
     af::array particlePbestList = af::constant(defaultValue, numOfParticles * numOfExams, numOfTimeslots);
     af::array particleGbest = af::constant(defaultValue, numOfExams, numOfTimeslots);
     //af::array velocityList = af::constant(0, numOfParticles * numOfExams, numOfTimeslots);
-
+    
     cout << "\n\ninitialization complete, begining algorithm now: ";
     printf("elapsed seconds: %g\n\n", timer::stop(initialization));
     //begin algorithm
@@ -831,7 +832,6 @@ int main() {
 
 
     //outfile.close();
-
 
 
 
