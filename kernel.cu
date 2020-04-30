@@ -1,5 +1,4 @@
 #define NOMINMAX
-#define mkl_set_num_threads
 
 #include <chrono>
 #include <random>
@@ -17,7 +16,6 @@
 #include <af/seq.h>
 #include<cmath>
 #include <numeric>
-#include <omp.h>
 
 using namespace std;
 using namespace af;
@@ -114,6 +112,13 @@ af::array createEnrolmentMatrixForAltData(int numOfExams, int numOfStudents, str
     //af_print(enrolmentMatrix);
     return enrolmentMatrix;
 }
+
+af::array createConflictMatrix(af::array conflictSeverity, int numOfParticles) {
+    af::array conflictMatrix = conflictSeverity > 0;
+    conflictMatrix = conflictMatrix - lower(conflictMatrix);
+    return conflictMatrix;
+}
+
 void normalizeParticleList(af::array& particleList) {
 
     timer normalizeTiming = timer::start();
@@ -131,7 +136,7 @@ void normalizeParticleList(af::array& particleList) {
     }
 
     normalizationConstant = sum(particleList, 1);
-    
+
 
     gfor(seq i, particleList.dims(0)) {
         for (int j = 0; j < particleList.dims(1); j++) {
@@ -149,11 +154,6 @@ void normalizeParticleList(af::array& particleList) {
 void updateParticles(af::array& particleList, af::array& velocityList) {
     particleList = particleList + velocityList;
 
-    //af::array negativeValues = particleList < 0;
-    //af::array reset = af::constant(0, particleList.dims(0), particleList.dims(1));
-
-    //replace(particleList, !negativeValues, reset);
-
     normalizeParticleList(particleList);
     af::sync();
 }
@@ -165,7 +165,7 @@ void calculateVelocity(af::array& particleList, af::array& particlePbestList, af
 
     af::array tiledParticleGbest = tile(particleGbest, numOfParticles, 1);
     velocityList = velocityList * w + u1 * rand(generator) * (particlePbestList - particleList) + u2 * rand(generator) * (tiledParticleGbest - particleList);
-    normalizeParticleList(velocityList); 
+    normalizeParticleList(velocityList);
     af::sync();
 
 }
@@ -210,8 +210,8 @@ void sampleParticleDistributions(int numOfParticles, int numOfDimensions, int nu
     af::sync();
 }
 
-af::array calculateFitnessFromClash(af::array &numberOfClashesPerStudent ,af::array& enrolementMatrix, af::array& generatedExamSchedule) {
-    
+af::array calculateFitnessFromClash(af::array& numberOfClashesPerStudent, af::array& enrolementMatrix, af::array& generatedExamSchedule) {
+
     numberOfClashesPerStudent = matmul(enrolementMatrix, generatedExamSchedule);
     numberOfClashesPerStudent -= 0.5;
     numberOfClashesPerStudent = numberOfClashesPerStudent.as(s16);
@@ -220,18 +220,33 @@ af::array calculateFitnessFromClash(af::array &numberOfClashesPerStudent ,af::ar
     af::sync();
 }
 
-af::array calculateexamTimeSlotDifference(af::array &examTimeSlot, af::array &conflictSeverity, int numOfStudents) {
-    af::array examDistance = tile(examTimeSlot, 1, examTimeSlot.dims(0),1);
-    examDistance = examDistance - examDistance.T();
-    replace(examDistance, !(examDistance > 5), 0);
-    examDistance = 32 / pow(2, examDistance);
-    replace(examDistance, !(examDistance > 16), 0);
-    examDistance = examDistance * conflictSeverity;
-    return sum(sum(examDistance)) / numOfStudents;
+af::array calculateFitnessFromRooms(af::array& generatedExamSchedule, af::array& examSizes, af::array& timeslotCapacity) {
+
+    af::array requiredCapacityPerTimeslot = matmul(generatedExamSchedule.T(), examSizes);
+    //af::array exceedRoomCondition = sum(sum(requiredCapacityPerTimeslot, 1) > timeslotCapacity(span,0,span),0);
+    af::array excessExams = requiredCapacityPerTimeslot - timeslotCapacity;
+    af::array condition = excessExams < 0;
+    replace(excessExams, !condition, constant(0, excessExams.dims(0), excessExams.dims(1), excessExams.dims(2)));
+    return sum(sum(excessExams * 10));
     af::sync();
+
 }
 
-void calculateFitnessFunction(af::array& generatedExamSchedule, af::array& enrolementMatrix, af::array& fitnessPerParticle, af::array& conflictTimeslots, af::array &particleList, af::array& examTimeSlot, af::array &conflictSeverity, int numOfParticles, int numOfExams, int numOfTimeslots) {
+af::array calculateexamTimeSlotDifference(af::array examTimeSlot, af::array conflictMatrix, af::array conflictSeverity, af::array distanceWeight, int numOfStudents) {
+    examTimeSlot = tile(examTimeSlot, 1, examTimeSlot.dims(0), 1);
+    af::array examDistance = examTimeSlot - examTimeSlot.T();
+    af::array conflictedDistance = constant(0, examDistance.dims(0), examDistance.dims(1), examDistance.dims(2));
+    replace(conflictedDistance, !conflictMatrix, examDistance);
+    conflictedDistance = abs(conflictedDistance);
+    replace(conflictedDistance, !(conflictedDistance > 5), 0);
+    conflictedDistance = 32 / pow(2, conflictedDistance);
+    replace(conflictedDistance, !(conflictedDistance > 16), 0);
+    conflictedDistance = conflictedDistance * conflictSeverity;
+    return sum(sum(conflictedDistance)) / numOfStudents;
+
+}
+
+void calculateFitnessFunction(af::array& generatedExamSchedule, af::array& enrolementMatrix, af::array& fitnessPerParticle, af::array& conflictTimeslots, af::array particleList, af::array& examSizes, af::array& timeslotCapacity, af::array& examTimeSlot, af::array conflictMatrix, af::array conflictSeverity, af::array distanceWeight, int numOfParticles, int numOfExams, int numOfTimeslots) {
     //calculate constraint 1
     af::array sampledFitness = af::constant(0, 1, 1, numOfParticles);;
     af::array sampledSchedule = generatedExamSchedule;
@@ -243,8 +258,9 @@ void calculateFitnessFunction(af::array& generatedExamSchedule, af::array& enrol
         sampleParticleDistributions(numOfParticles, numOfExams, numOfTimeslots, particleList, generatedExamSchedule, examTimeSlot);
         printf("\telapsed seconds,%g, for sampling \n", timer::stop(sampleTiming));
         timer fitnesscalculationTiming = timer::start();
-        sampledFitness = calculateFitnessFromClash(numberOfClashesPerStudent,enrolementMatrix,generatedExamSchedule).copy();
-        sampledFitness += calculateexamTimeSlotDifference(examTimeSlot, conflictSeverity, enrolementMatrix.dims(0));
+        sampledFitness = calculateFitnessFromClash(numberOfClashesPerStudent, enrolementMatrix, generatedExamSchedule).copy();
+        //sampledFitness += calculateFitnessFromRooms(generatedExamSchedule, examSizes, timeslotCapacity).copy();
+        sampledFitness += calculateexamTimeSlotDifference(examTimeSlot, conflictMatrix, conflictSeverity, distanceWeight, enrolementMatrix.dims(0));
         printf("\telapsed seconds,%g, for fitness calculation \n", timer::stop(fitnesscalculationTiming));
         af::array condition = sampledFitness < fitnessPerParticle;
 
@@ -259,14 +275,12 @@ void calculateFitnessFunction(af::array& generatedExamSchedule, af::array& enrol
 
     }
     generatedExamSchedule = sampledSchedule;
-    //averageFitness /= 5;
-    //fitnessPerParticle = averageFitness;
     af::sync();
 }
 
 
 
-int updateGbest(af::array& pBestfitnessPerParticle, af::array& particleGbest, af::array &generatedExamSchedule, af::array &particleList, af::array &enrolementMatrix, af::array &conflictTimeslots, float* gBestFitnes, int numOfExams, int numOfTimeslots, float learningFactor) {
+int updateGbest(af::array& pBestfitnessPerParticle, af::array& particleGbest, af::array generatedExamSchedule, af::array particleList, af::array enrolementMatrix, af::array conflictTimeslots, float* gBestFitnes, int numOfExams, int numOfTimeslots, float learningFactor) {
     int intInitialise = 10;
     int* minValue = &intInitialise;
 
@@ -280,16 +294,10 @@ int updateGbest(af::array& pBestfitnessPerParticle, af::array& particleGbest, af
 
     if (*minValue < *gBestFitnes) {
         particleGbest = particleList(seq(*location * numOfExams, (*location + 1) * numOfExams - 1), span);
-        //cout << "lower fitness found!!!!!\n";
         *gBestFitnes = *minValue;
         generatedExamSchedule = generatedExamSchedule(span, span, *location);
         af::array dimensionTotal = sum(particleGbest, 1);
-        //gfor(seq i, numOfExams) {
-        //    for (int j = 0; j < numOfTimeslots; j++) {
-        //        af::array condition = (generatedExamSchedule(i, j) == 1);
-        //        particleGbest(i, j) = particleGbest(i, j) - (1 - learningFactor) * (!condition) * particleGbest(i, j) + condition * (dimensionTotal(i) - particleGbest(i, j)) * (1 - learningFactor);
-        //    }
-        //}
+
 
         gfor(seq i, numOfExams) {
             for (int j = 0; j < numOfTimeslots; j++) {
@@ -299,54 +307,6 @@ int updateGbest(af::array& pBestfitnessPerParticle, af::array& particleGbest, af
         }
     }
 
-
-    //   af::array searchGbest = particleGbest;
-    //   float lambda = 1 - pow((*gBestFitnes - 1) / *gBestFitnes, 30000.0/5);
-    //   cout << lambda;
-    //   af::array localSearchBest = af::constant(0,1);
-    //   int localIteration = 0;
-    //   localSearchBest(0) = *gBestFitnes;
-    //   //local search
-    //   if (*gBestFitnes > 15000 ) {
-    //       while (localSearchBest(0).scalar<float>() >= *gBestFitnes && localIteration < 10) {
-    //           gfor(seq i, numOfExams) {
-    //               for (int j = 0; j < numOfTimeslots; j++) {
-    //                   searchGbest(i, j) = (1 - lambda) * searchGbest(i, j) + lambda * (4 * searchGbest(i, j) * (1 - searchGbest(i, j)));
-    //               }
-    //           }
-    //           normalizeParticleList(searchGbest);
-    //           sampleParticleDistributions(1, numOfExams, numOfTimeslots, searchGbest, generatedExamSchedule);
-    //           calculateFitnessFunction(generatedExamSchedule, enrolementMatrix, localSearchBest, conflictTimeslots,particleGbest,1,numOfExams,numOfTimeslots);
-    //           localIteration++;
-    //           
-    //           //cout << "local search best " <<localSearchBest.scalar<float>();
-    //           //af_print(searchGbest(1,span));
-    //       }
-    //   }else {
-    //       while (localSearchBest(0).scalar<float>() >= *gBestFitnes && localIteration < 10) {
-    //           for (int k = 0; k < numOfExams; k++) {
-    //               for (int j = 0; j < numOfTimeslots; j++) {
-    //                   normal_distribution<double> distribution(searchGbest(k,j).scalar<float>(), 0.038);
-    //                   searchGbest(k, j) = (1 - lambda) * searchGbest(k, j) + lambda * (distribution(generator));
-    //               }
-    //           }
-    //           normalizeParticleList(searchGbest);
-    //           sampleParticleDistributions(1, numOfExams, numOfTimeslots, searchGbest, generatedExamSchedule);
-    //           calculateFitnessFunction(generatedExamSchedule, enrolementMatrix, localSearchBest, conflictTimeslots,searchGbest,1,numOfExams,numOfTimeslots);
-    ///*           cout << "lambda :" << lambda;
-    //           af_print(searchGbest);
-    //           cout << "iterating\n";*/
-    //           localIteration++;
-    //       }
-    //   }
-    //   if (localSearchBest(0).scalar<float>() < *gBestFitnes) {
-    //       particleGbest = searchGbest;
-    //       *gBestFitnes = localSearchBest(0).scalar<float>();
-    //       cout << "found a better value\n";
-    //       //af_print(particleGbest);
-    //   }
-    //   cout << "local iteration :" << localIteration;
-
     af::sync();
     return *location;
 }
@@ -355,38 +315,12 @@ void updatePBest(af::array& fitnessPerParticle, af::array& pBestfitnessPerPartic
 
     generatedExamSchedule = moddims(reorder(generatedExamSchedule, 1, 0, 2), numOfTimeslots, numOfParticles * numOfExams).T();
 
-    //af::array dimensionTotal = sum(particleList, 1);
-    //af::array condition1 = fitnessPerParticle < pBestfitnessPerParticle;
-    //replace(pBestfitnessPerParticle, !condition1, fitnessPerParticle);
-    //condition1 = moddims(reorder(tile(condition1, 1, numOfExams), 1, 0, 2), 1, numOfParticles * numOfExams).T();
-
-    //gfor(seq i, numOfParticles * numOfExams) {
-    //    for (int j = 0; j < numOfTimeslots; j++) {
-    //        af::array condition2 = (generatedExamSchedule(i, j) == 1);
-    //        particlePbestList(i, j) = (learningFactor)*condition1(i) * (!condition2) * particleList(i, j)
-    //            + condition1(i) * condition2 * ((dimensionTotal(i) - particleList(i, j)) * (1.0 - learningFactor) + particleList(i, j))
-    //            + (!condition1)(i) * particlePbestList(i, j);
-    //    }
-    //}
-
     af::array dimensionTotal = sum(particlePbestList, 1);
     af::array condition = fitnessPerParticle < pBestfitnessPerParticle;
     replace(pBestfitnessPerParticle, !condition, fitnessPerParticle);
     condition = moddims(reorder(tile(condition, numOfExams, numOfTimeslots), 1, 0, 2), numOfTimeslots, numOfParticles * numOfExams).T();
 
     particlePbestList = particlePbestList + condition * ((generatedExamSchedule * (1 - learningFactor) * (1 - particlePbestList)) - (!generatedExamSchedule * (1 - learningFactor) * particlePbestList));
-
-    //condition1 = moddims(reorder(tile(condition1, 1, numOfExams), 1, 0, 2), 1, numOfParticles * numOfExams).T();
-    //gfor(seq i, numOfParticles * numOfExams) {
-    //    for (int j = 0; j < numOfTimeslots; j++) {
-    //        af::array condition2 = (generatedExamSchedule(i, j) == 1);
-    //        particlePbestList(i, j) = particlePbestList(i, j) - (1 - learningFactor) * condition1(i) * (!condition2) * particlePbestList(i, j)
-    //            + condition1(i) * condition2 * (dimensionTotal(i) - particlePbestList(i, j)) * (1 - learningFactor);
-    //    }
-    //}
-
-    //af_print(particlePbestList(seq(0, 3), span));
-    //af_print(sample(seq(0, 3), span));
 
     af::sync();
 }
@@ -402,46 +336,36 @@ void perturbConflictZone(af::array& particleList, af::array& conflictTimeslots, 
     unsigned int uInitialise = 1U;
     unsigned* location = &uInitialise;
 
-    //cout << "perturbing!!!!!!!!!!!!!\n\n\n";
 
     for (int i = 0; i < conflictExamsSlots.dims(2); i++) {
         for (int j = 0; j < 10; j++) {
             af::max(max, location, conflictExamsSlots(span, span, i));
-            //af_print(particleList((i * conflictExamsSlots.dims(1)) + *location, span));
-            //cout << *location << "\n\n";
-            //particleList((i*conflictExamsSlots.dims(1)) + *location , span) = af::constant(defaultValue, 1, conflictTimeslots.dims(1));
-            particleList((i * conflictExamsSlots.dims(1)) + *location, span) = af::randu(1, conflictTimeslots.dims(1));
-            //velocityList((i * conflictExamsSlots.dims(1)) + *location, span) = af::randu(1, conflictTimeslots.dims(1));
-            //af_print(particleList((i * conflictExamsSlots.dims(1)) + *location, span));
-            //for (int k = 0; k < particleList.dims(1); k++) {
-            //    particleList(i * conflictExamsSlots.dims(1) + *location, k) = 4 * particleList(i * conflictExamsSlots.dims(1) + *location, k) * (1 - particleList(i * conflictExamsSlots.dims(1) + *location, k));
-            //}
 
-            //af_print(particleList((i * conflictExamsSlots.dims(1)) + *location, span));
+            particleList((i * conflictExamsSlots.dims(1)) + *location, span) = af::randu(1, conflictTimeslots.dims(1));
+
 
             conflictExamsSlots(0, *location, i) = 0;
 
         }
     }
 
-
-
-
-    //for (int i = 0; i < conflictExamsSlots.dims(2); i++) {
-    //    while(*max != 0 ){
-    //        af::max(max, location, conflictExamsSlots(span, span, i));
-    //        //af_print(particleList((i * conflictExamsSlots.dims(1)) + *location, span));
-    //        //cout << *location << "\n\n";
-    //        //particleList((i*conflictExamsSlots.dims(1)) + *location , span) = af::constant(defaultValue, 1, conflictTimeslots.dims(1));
-    //        particleList((i * conflictExamsSlots.dims(1)) + *location, span) = af::randu(1, conflictTimeslots.dims(1));
-    //        //af_print(particleList((i * conflictExamsSlots.dims(1)) + *location, span));
-    //        conflictExamsSlots(0, *location, i) = 0;
-
-    //    }
-    //    *max = 10;
-    //}
-
     normalizeParticleList(particleList);
+}
+
+af::array generateExamSize(af::array enrolementMatrix, af::array roomCapacity) {
+    af::array studentsPerExam = sum(enrolementMatrix, 0).T();
+    af::array examSizes = af::constant(0, enrolementMatrix.dims(1), roomCapacity.dims(1));
+
+    gfor(seq i, studentsPerExam.dims(0)) {
+        for (int j = 1; j < roomCapacity.dims(1); j++) {
+            af::array condition = ((studentsPerExam(i) > roomCapacity(j)));
+            examSizes(i, j) = condition.as(f32);
+        }
+    }
+
+    examSizes(span, 0, span) = 1;
+
+    return examSizes;
 }
 
 
@@ -451,10 +375,8 @@ int main() {
     timer initialization = timer::start();
     af::setBackend(AF_BACKEND_CUDA); //controls whether run on gpu or cpu
     //af::setBackend(AF_BACKEND_CPU);
-    info(); //prints deviceinfo
 
-    //omp_set_num_threads(1);
-    //mkl_set_num_threads(1);
+    info(); //prints deviceinfo
 
     //collect data
     map<string, int> studentList = mapDataFromCSV("C:\\Users\\lingz\\Documents\\y4sem2\\IE4102\\Cuda Projects\\Cuda Datasets\\Nott\\students.csv");
@@ -470,14 +392,34 @@ int main() {
     //int numOfStudents = 941; // yor 83
     //int numOfExams = 181; //yor 83
     //int numOfTimeslots = 21; //yor 83
-    int numOfStudents = 30032; // pur 93
-    int numOfExams = 2419; //pur 93
-    int numOfTimeslots = 42; //pur 93
+    //int numOfStudents = 30032; // pur 93
+    //int numOfExams = 2419; //pur 93
+    //int numOfTimeslots = 42; //pur 93
     //int numOfStudents = 2750; // ute 92
     //int numOfExams = 184; // ute 92
     //int numOfTimeslots = 10; // ute 92
-    int numOfParticles = 50;
+    int numOfStudents = 4360; // tre 92
+    int numOfExams = 261; // tre 92
+    int numOfTimeslots = 23; // tre 92
+    //int numOfStudents = 11483; // rye 93
+    //int numOfExams = 482; // rye 93
+    //int numOfTimeslots = 23; // rye 93
+    //int numOfStudents = 21266; // uta 92
+    //int numOfExams = 622; // uta 92
+    //int numOfTimeslots = 35; // uta 92
+    int numOfParticles = 400;
     float defaultValue = 1.0 / numOfTimeslots;
+
+    vector<float> roomcapacities = { 25,30,35,40,50,80,95,125,200,230,250,270 };
+    af::array roomCapacity(1, roomcapacities.size(), roomcapacities.data()); // nott and below
+    vector<float> roomsPerSlot = { 1,1,1,2,1,3,1,1,1,1,1,3 };
+    for (int k = roomsPerSlot.size() - 2; k >= 0; k--) {
+        roomsPerSlot[k] = roomsPerSlot[k] * 2 + roomsPerSlot[k + 1];
+    }
+    af::array timeslotCapacity(1, roomsPerSlot.size(), roomsPerSlot.data()); // nott and below
+    af_print(timeslotCapacity);
+    timeslotCapacity = tile(timeslotCapacity, numOfTimeslots, 1, numOfParticles);
+
 
     double w = 0.5;
     double u1 = 1;
@@ -488,31 +430,23 @@ int main() {
     float gBestFitness = INT_MAX;
     int bestParticle;
 
-    //generate matrices
-    //af::array enrolementMatrix = createEnrolmentMatrixForAltData(numOfExams, numOfStudents, "C:\\Users\\lingz\\Documents\\y4sem2\\IE4102\\Cuda Projects\\Cuda Datasets\\car\\car-92.csv");
-    af::array enrolementMatrix = createEnrolmentMatrixForAltData(numOfExams, numOfStudents, "C:\\Users\\lingz\\Documents\\y4sem2\\IE4102\\Cuda Projects\\Cuda Datasets\\pur\\pur-93.csv");
-    //af::array enrolementMatrix = createEnrolmentMatrixForAltData(numOfExams, numOfStudents, "C:\\Users\\lingz\\Documents\\y4sem2\\IE4102\\Cuda Projects\\Cuda Datasets\\ute\\ute-92.csv");
-    //af::array enrolementMatrix = createEnrolmentMatrixForAltData(numOfExams, numOfStudents, "C:\\Users\\lingz\\Documents\\y4sem2\\IE4102\\Cuda Projects\\Cuda Datasets\\yor\\yor-83.csv");
-    //af::array enrolementMatrix = createEnrolmentMatrix(studentList, examList, "C:\\Users\\lingz\\Documents\\y4sem2\\IE4102\\Cuda Projects\\Cuda Datasets\\Nott\\enrolements.csv");
-    af::array conflictSeverity = tile(matmul(enrolementMatrix.T(), enrolementMatrix), 1, 1, numOfParticles); 
-    conflictSeverity = conflictSeverity - lower(conflictSeverity);
+    af::array enrolementMatrix = createEnrolmentMatrixForAltData(numOfExams, numOfStudents, "C:\\Users\\lingz\\Documents\\y4sem2\\IE4102\\Cuda Projects\\Cuda Datasets\\tre\\tre-92.csv");
+    af::array conflictSeverity = tile(matmul(enrolementMatrix.T(), enrolementMatrix), 1, 1, numOfParticles);
+    af::array conflictMatrix = createConflictMatrix(conflictSeverity, numOfParticles);
     af::array generatedExamSchedule = af::constant(0, numOfExams, numOfTimeslots, numOfParticles);
     af::array fitnessPerParticle = af::constant(INT_MAX, 1, 1, numOfParticles);
     af::array pBestfitnessPerParticle = af::constant(INT_MAX, 1, 1, numOfParticles);
     af::array conflictTimeslots = af::constant(0, 1, numOfTimeslots, numOfParticles);
+    af::array examSizes = generateExamSize(enrolementMatrix, roomCapacity);
     af::array examTimeSlot = constant(0, numOfExams, 1, numOfParticles);
-
+    af::array distanceWeight = conflictMatrix * 5;
+    conflictSeverity = conflictSeverity - lower(conflictSeverity);
     //initialise particles
     af::array particleList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
-    //af::array particlePbestList = af::randu( numOfParticles * numOfExams, numOfTimeslots);
-    //af::array particleGbest = af::randu( numOfExams, numOfTimeslots);
-    af::array velocityList = af::randu( numOfParticles * numOfExams, numOfTimeslots);
-
-    //af::array particleList = af::constant( defaultValue, numOfParticles * numOfExams, numOfTimeslots);
+    af::array velocityList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
     af::array particlePbestList = af::constant(defaultValue, numOfParticles * numOfExams, numOfTimeslots);
     af::array particleGbest = af::constant(defaultValue, numOfExams, numOfTimeslots);
-    //af::array velocityList = af::constant(0, numOfParticles * numOfExams, numOfTimeslots);
-    
+
     cout << "\n\ninitialization complete, begining algorithm now: ";
     printf("elapsed seconds: %g\n\n", timer::stop(initialization));
     //begin algorithm
@@ -527,18 +461,18 @@ int main() {
     int perturbcount = 0;
     timer start1 = timer::start();
     int perturbMultiplier = 0;
-    
+
     //sampleParticleDistributions(numOfParticles, numOfExams, numOfTimeslots, particleList, generatedExamSchedule);
-    calculateFitnessFunction(generatedExamSchedule, enrolementMatrix, fitnessPerParticle, conflictTimeslots, particleList, examTimeSlot, conflictSeverity, numOfParticles, numOfExams, numOfTimeslots);
+    calculateFitnessFunction(generatedExamSchedule, enrolementMatrix, fitnessPerParticle, conflictTimeslots, particleList, examSizes, timeslotCapacity, examTimeSlot, conflictMatrix, conflictSeverity, distanceWeight, numOfParticles, numOfExams, numOfTimeslots);
     updatePBest(fitnessPerParticle, pBestfitnessPerParticle, generatedExamSchedule, particlePbestList, particleList, numOfParticles, numOfExams, numOfTimeslots, learningFactor);
     bestParticle = updateGbest(pBestfitnessPerParticle, particleGbest, generatedExamSchedule, particleList, enrolementMatrix, conflictTimeslots, &gBestFitness, numOfExams, numOfTimeslots, learningFactor);
-    //bestParticle = updateGbest(pBestfitnessPerParticle, particleGbest, generatedExamSchedule, particlePbestList, enrolementMatrix, conflictTimeslots, &gBestFitness, numOfExams, numOfTimeslots, learningFactor);
 
 
 
-
+    ofstream outfile;
+    outfile.open("output.txt");
     for (int iteration = 0; iteration < numOfIterations; iteration++) {
-        
+
         timer start2 = timer::start();
 
 
@@ -551,7 +485,7 @@ int main() {
         printf("elapsed seconds,%g, for updateparticles \n", timer::stop(updateParticle));
 
         timer calculateFitness = timer::start();
-        calculateFitnessFunction(generatedExamSchedule, enrolementMatrix, fitnessPerParticle, conflictTimeslots, particleList, examTimeSlot, conflictSeverity, numOfParticles, numOfExams, numOfTimeslots);
+        calculateFitnessFunction(generatedExamSchedule, enrolementMatrix, fitnessPerParticle, conflictTimeslots, particleList, examSizes, timeslotCapacity, examTimeSlot, conflictMatrix, conflictSeverity, distanceWeight, numOfParticles, numOfExams, numOfTimeslots);
         printf("elapsed seconds,%g, for calculatingfitness \n", timer::stop(calculateFitness));
 
         timer updatePbestFunction = timer::start();
@@ -560,47 +494,9 @@ int main() {
 
         timer updateGbestFunction = timer::start();
         bestParticle = updateGbest(pBestfitnessPerParticle, particleGbest, generatedExamSchedule, particleList, enrolementMatrix, conflictTimeslots, &gBestFitness, numOfExams, numOfTimeslots, learningFactor);
-        //bestParticle = updateGbest(pBestfitnessPerParticle, particleGbest, generatedExamSchedule, particlePbestList, enrolementMatrix, conflictTimeslots, &gBestFitness, numOfExams, numOfTimeslots, learningFactor);
         printf("elapsed seconds,%g, for updateGbest \n", timer::stop(updateGbestFunction));
 
 
-
-        //timer updateParticle = timer::start();
-        //updateParticles(particleList, velocityList);
-        //printf("elapsed seconds,%g, for updateparticles \n", timer::stop(updateParticle));
-        ////timer checkForNAN = timer::start();
-        ////af::max(maxValue, location, isNaN(particleList));
-        ////if (*maxValue > 0) {
-        ////    cout << "nan detected resetting!!!!!! location = " << *location << "\n";
-        ////    //af_print(particleList);
-        ////    //break;
-        ////    
-        ////    particleList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
-        ////    normalizeParticleList(particleList);
-        ////    //particlePbestList = af::constant(defaultValue, numOfParticles * numOfExams, numOfTimeslots);
-        ////    //particleGbest = af::constant(defaultValue, numOfExams, numOfTimeslots);
-        ////    //velocityList = af::constant(0, numOfParticles * numOfExams, numOfTimeslots);
-        ////}
-        ////printf("elapsed seconds: %g for check for nan \n", timer::stop(checkForNAN));
-
-        //timer calculateFitness = timer::start();
-        //calculateFitnessFunction(generatedExamSchedule, enrolementMatrix, fitnessPerParticle, conflictTimeslots,particleList,examSizes,timeslotCapacity,numOfParticles, numOfExams, numOfTimeslots);
-        //printf("elapsed seconds,%g, for calculatingfitness \n", timer::stop(calculateFitness));
-
-
-        //timer updatePbestFunction = timer::start();
-        //updatePBest(fitnessPerParticle, pBestfitnessPerParticle, generatedExamSchedule, particlePbestList, particleList, numOfParticles, numOfExams, numOfTimeslots, learningFactor);
-        //printf("elapsed seconds,%g, for updatePbest \n", timer::stop(updatePbestFunction));
-
-        //timer updateGbestFunction = timer::start();
-        //bestParticle = updateGbest(pBestfitnessPerParticle, particleGbest, generatedExamSchedule, particleList, enrolementMatrix, conflictTimeslots, &gBestFitness, numOfExams, numOfTimeslots, learningFactor);
-        //printf("elapsed seconds,%g, for updateGbest \n", timer::stop(updateGbestFunction));
-
-        //timer calculateVelocityFunction = timer::start();
-        //calculateVelocity(particleList, particlePbestList, particleGbest, velocityList, numOfParticles, w, u1, u2);
-        //printf("elapsed seconds,%g, for update velocity \n", timer::stop(calculateVelocityFunction));
-
-      
 
         if (gBestFitness == 0) {
             break;
@@ -610,184 +506,44 @@ int main() {
             stuckCount++;
             perturbcount++;
 
-            if (stuckCount > 5) {
-
-                //cout << "scattering particles!!!!!!!!!!!\n\n";
- /*               setSeed(time(NULL));
-                velocityList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
-                normalizeParticleList(velocityList);*/
-                //setSeed(time(NULL));
-                //particleList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
-                //normalizeParticleList(particleList);
-            }
-
-
-
-        }else {
+        }
+        else {
             stuckCount = 0;
             perturbcount = 0;
             lowestgBest = gBestFitness;
             perturbMultiplier = 0;
         }
-        
+
 
         if (stuckCount > 400) {
             break;
         }
 
-        
+
 
         if (perturbcount > 10) {
             cout << "perturbing!!!!!!!!!!!!!!!!! \n\n";
-            perturbConflictZone(particleList, conflictTimeslots, generatedExamSchedule, particlePbestList,velocityList,defaultValue);
+            perturbConflictZone(particleList, conflictTimeslots, generatedExamSchedule, particlePbestList, velocityList, defaultValue);
             setSeed(time(NULL));
             velocityList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
             normalizeParticleList(velocityList);
             perturbcount = 0;
-            //if (perturbMultiplier < 8) {
-            //    perturbMultiplier++;
-            //}
         }
 
-        af::sync();
+
         cout << "lowest fitness so far " << gBestFitness << "\n";
         printf("elapsed seconds: %g for round %d\n\n", timer::stop(start2), iteration);
+        outfile << "lowest fitness found, " << gBestFitness << " , learning factor,  " << ", round, " << iteration << "\n";
     }
 
-    //af_print(particleGbest);
-    //af_print(generatedExamSchedule);
 
     validateSchedule(generatedExamSchedule);
 
     cout << "lowest fitness found, " << gBestFitness << " , learning factor,  " << learningFactor << ", w , " << w << ", u1 ," << u1 << ", u2 ," << u2 << ", round, " << "\n";
     printf("elapsed seconds: %g for round \n\n", timer::stop(start1));
 
+    outfile.close();
 
-
-    //af_print(generatedExamSchedule(span, span, bestParticle));
-    //af_print(particleList(seq(bestParticle * numOfExams, (bestParticle + 1) * numOfExams - 1), span));
-
-    //ofstream outfile;
-    //outfile.open("output.txt");
-    //int bestfitnesssofar = INT_MAX;
-    //for (w = 0.1; w <= 0.9; w += 0.1) {
-    //    for (u1 = 1; u1 <= 10; u1 += 2) {
-    //        for (u2 = 1; u2 < 10; u2 += 2) {
-    //            for (learningFactor = 0.5; learningFactor <= 0.9; learningFactor += 0.1) {
-
-    //                for (int j = 0; j < 3; j++) {
-
-    //                    gBestFitness = INT_MAX;
-
-
-    //                    af::array fitnessPerParticle = af::constant(INT_MAX, 1, 1, numOfParticles);
-    //                    af::array pBestfitnessPerParticle = af::constant(INT_MAX, 1, 1, numOfParticles);
-    //                    af::array conflictTimeslots = af::constant(0, 1, numOfTimeslots, numOfParticles);
-
-
-
-    //                    //initialise particles
-    //                    af::array particleList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
-    //                    //af::array particlePbestList = af::randu( numOfParticles * numOfExams, numOfTimeslots);
-    //                    //af::array particleGbest = af::randu( numOfExams, numOfTimeslots);
-    //                    //af::array velocityList = af::randu( numOfParticles * numOfExams, numOfTimeslots);
-
-    //                    //af::array particleList = af::constant( defaultValue, numOfParticles * numOfExams, numOfTimeslots);
-    //                    af::array particlePbestList = af::constant(defaultValue, numOfParticles * numOfExams, numOfTimeslots);
-    //                    af::array particleGbest = af::constant(defaultValue, numOfExams, numOfTimeslots);
-    //                    af::array velocityList = af::constant(0, numOfParticles * numOfExams, numOfTimeslots);
-
-    //                    cout << "\n\ninitialization complete, begining algorithm now: ";
-    //                    printf("elapsed seconds: %g\n\n", timer::stop(initialization));
-    //                    //begin algorithm
-    //                    int intInitialise = 0;
-    //                    int* maxValue = &intInitialise;
-
-    //                    unsigned int uInitialise = 1U;
-    //                    unsigned* location = &uInitialise;
-
-    //                    int stuckCount = 0;
-    //                    int lowestgBest = 0;
-    //                    int perturbcount = 0;
-    //                    timer start1 = timer::start();
-    //                    for (int iteration = 0; iteration < numOfIterations; iteration++) {
-
-    //                        timer start2 = timer::start();
-    //                        updateParticles(particleList, velocityList);
-
-    //                        af::max(maxValue, location, isNaN(particleList));
-    //                        if (*maxValue > 0) {
-    //                            cout << "nan detected resetting!!!!!! location = " << *location << "\n";
-    //                            //af_print(particleList);
-    //                            //break;
-
-    //                            particleList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
-    //                            normalizeParticleList(particleList);
-    //                            //particlePbestList = af::constant(defaultValue, numOfParticles * numOfExams, numOfTimeslots);
-    //                            //particleGbest = af::constant(defaultValue, numOfExams, numOfTimeslots);
-    //                            //velocityList = af::constant(0, numOfParticles * numOfExams, numOfTimeslots);
-    //                        }
-    //                        calculateFitnessFunction(generatedExamSchedule, enrolementMatrix, fitnessPerParticle, conflictTimeslots, particleList, numOfParticles, numOfExams, numOfTimeslots);
-    //                        updatePBest(fitnessPerParticle, pBestfitnessPerParticle, generatedExamSchedule, particlePbestList, particleList, numOfParticles, numOfExams, numOfTimeslots, learningFactor);
-    //                        bestParticle = updateGbest(pBestfitnessPerParticle, particleGbest, generatedExamSchedule, particleList, enrolementMatrix, conflictTimeslots, &gBestFitness, numOfExams, numOfTimeslots, learningFactor);
-
-
-    //                        if (gBestFitness == 0) {
-    //                            break;
-    //                        }
-
-    //                        if (lowestgBest == gBestFitness) {
-    //                            stuckCount++;
-    //                            perturbcount++;
-
-    //                            //if (stuckCount > 5) {
-    //                            ////    cout << "scattering particles!!!!!!!!!!!\n\n";
-    //                            //    setSeed(time(NULL));
-    //                            //    velocityList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
-    //                            //    normalizeParticleList(velocityList);
-    //                            ////    //setSeed(time(NULL));
-    //                            ////    //particleList = af::randu(numOfParticles * numOfExams, numOfTimeslots);
-    //                            ////    //normalizeParticleList(particleList);
-    //                            //}
-
-
-
-    //                        }
-    //                        else {
-    //                            stuckCount = 0;
-    //                            perturbcount = 0;
-    //                            lowestgBest = gBestFitness;
-    //                        }
-
-    //                        calculateVelocity(particleList, particlePbestList, particleGbest, velocityList, numOfParticles, w, u1, u2);
-
-    //                        if (stuckCount > 50) {
-    //                            break;
-    //                        }
-    //                        if (perturbcount > 10) {
-
-    //                            perturbConflictZone(particleList, conflictTimeslots, generatedExamSchedule, particlePbestList, defaultValue);
-    //                            perturbcount = 0;
-    //                        }
-
-    //                        // cout << "lowest fitness so far " << gBestFitness << "\n";
-    //                        //printf("elapsed seconds: %g for round %d\n\n", timer::stop(start2), iteration);
-    //                    }
-    //                    if (lowestgBest < bestfitnesssofar) {
-    //                        bestfitnesssofar = lowestgBest;
-    //                    }
-    //                    outfile << "lowest fitness found, " << lowestgBest << " , learning factor,  " << learningFactor << ", w , " << w << ", u1 ," << u1 << ", u2 ," << u2 << ", round, " << "\n";
-    //                    printf("elapsed seconds: %g ,lowest ftiness found so far %d\n\n", timer::stop(start1), bestfitnesssofar);
-    //                }
-    //                cout << "\n\n";
-    //            }
-    //        }
-    //    }
-    //}
-
-
-
-    //outfile.close();
 
 
 
